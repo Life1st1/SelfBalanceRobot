@@ -1,2 +1,2 @@
 # SelfBalanceRobot
-Develop Self Balancing Robot using Beagle Bon Back
+Develop Self Balancing Robot using Beagle Bone Back
