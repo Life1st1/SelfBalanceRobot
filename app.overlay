@@ -1,0 +1,55 @@
+
+&pinctrl {
+    i2c0_custom: i2c0_custom {
+        group1 {
+            pinmux = <I2C0_SDA_GPIO8>,
+                     <I2C0_SCL_GPIO9>;
+            bias-pull-up;
+            drive-open-drain;
+            output-high;
+        };
+    };
+};
+
+
+&i2c0 {
+    status = "okay";
+    pinctrl-0 = <&i2c0_custom>;
+    pinctrl-names = "default";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+
+    oled_display: ssd1306@3c {
+        compatible = "solomon,ssd1306";
+        reg = <0x3c>;
+        status = "okay";
+        width = <128>;
+        height = <64>;
+        segment-offset = <0>;
+        page-offset = <0>;
+        display-offset = <0>;
+        multiplex-ratio = <63>;
+        segment-remap;
+        com-invdir;
+        prechargep = <0x22>;
+        softreset-on;
+        ready-time-ms = <100>;
+    };
+
+    mpu6050: mpu6050@68 {
+        compatible = "invensense,mpu6050";
+        reg = <0x68>;
+        status = "okay";
+        smplrt-div = <249>;
+        /* optional if you use interrupt:
+        int-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+        */
+    };
+};
+
+
+/ {
+    chosen {
+        zephyr,display = &oled_display;
+    };
+};
+
