@@ -25,7 +25,7 @@ struct quaternion quat_mult (struct quaternion L, struct quaternion R){
 // The resulting quaternion is a global variable (q_est), so it is not returned or passed by reference/pointer
 // Gyroscope Angular Velocity components are in Radians per Second
 // Accelerometer componets will be normalized
-void imu_filter(float ax, float ay, float az, float gx, float gy, float gz){
+void imu_filter_dt(float ax, float ay, float az, float gx, float gy, float gz, float dt){
     
     //Variables and constants
     struct quaternion q_est_prev = q_est;
@@ -111,11 +111,16 @@ void imu_filter(float ax, float ay, float az, float gx, float gy, float gz){
     */
     quat_scalar(&gradient, BETA);             // multiply normalized gradient by beta
     quat_sub(&q_est_dot, q_w, gradient);        // subtract above from q_w, the integrated gyro quaternion
-    quat_scalar(&q_est_dot, DELTA_T);
+    quat_scalar(&q_est_dot, dt > 0.0f ? dt : DELTA_T);
     quat_add(&q_est, q_est_prev, q_est_dot);     // Integrate orientation rate to find position
     quat_Normalization(&q_est);                 // normalize the orientation of the estimate
                                                 //(shown in diagram, plus always use unit quaternions for orientation)
    
+}
+
+void imu_filter(float ax, float ay, float az, float gx, float gy, float gz)
+{
+    imu_filter_dt(ax, ay, az, gx, gy, gz, DELTA_T);
 }
 
 /*

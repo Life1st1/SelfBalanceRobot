@@ -8,7 +8,7 @@
 #ifndef MADGWICK_FILTER_H
 #define MADGWICK_FILTER_H
 
-// Include a hardware specific header file to redefine these predetermined values
+// Default value if a caller does not provide dt explicitly.
 #ifndef DELTA_T
     #define DELTA_T 0.01f // 100Hz sampling frequency
 #endif
@@ -92,11 +92,12 @@ static inline void quat_Normalization(struct quaternion * q){
 }
 
 static inline void printQuaternion (struct quaternion q){
-    printf("%f %f %f %f\n", q.q1, q.q2, q.q3, q.q4);
+    printf("%0.6f %0.6f %0.6f %0.6f\n", q.q1, q.q2, q.q3, q.q4);
 }
 
 
 // IMU consists of a Gyroscope plus Accelerometer sensor fusion
+void imu_filter_dt(float ax, float ay, float az, float gx, float gy, float gz, float dt);
 void imu_filter(float ax, float ay, float az, float gx, float gy, float gz);
 
 // void marg_filter(void); for future
