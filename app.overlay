@@ -1,3 +1,4 @@
+#include <zephyr/dt-bindings/pwm/pwm.h>
 
 &pinctrl {
     i2c0_custom: i2c0_custom {
@@ -9,8 +10,27 @@
             output-high;
         };
     };
+
+	ledc0_default: ledc0-default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO2>;
+			output-enable;
+		};
+	};
 };
 
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
 
 &i2c0 {
     status = "okay";
@@ -51,5 +71,19 @@
     chosen {
         zephyr,display = &oled_display;
     };
+
+    aliases {
+		pwm-0 = &ledc0;
+		pwm-led0 = &pwm_led_blue;
+	};
+
+	pwmleds {
+		compatible = "pwm-leds";
+
+		pwm_led_blue: pwm-led-gpio0-2 {
+			label = "PWM LED0";
+			pwms = <&ledc0 0 1000 PWM_POLARITY_NORMAL>;
+		};
+	};
 };
 
