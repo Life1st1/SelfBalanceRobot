@@ -39,6 +39,10 @@
     };
 };
 
+&timers1 {
+    st,prescaler = <71>;
+};
+
 / {
     chosen {
         zephyr,display = &oled_display;

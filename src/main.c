@@ -3,41 +3,34 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
-#define PWM_CHANNEL 1u
-#define PWM_PERIOD_NS 200000u   /* 5 kHz */
-#define PWM_DUTY_PERCENT 50u
+#define PWM_CHANNEL     1U
+
+/* Counter = 1 MHz (PSC = 71) */
+#define PWM_PERIOD      1000U      /* 1000 cycles -> 1000 Hz */
+#define PWM_PULSE       (PWM_PERIOD / 2)       /* 50% duty */
 
 static const struct device *motor1 = DEVICE_DT_GET(DT_ALIAS(motor_1));
 
-static void motor_set_duty(uint8_t duty_percent)
+int main(void)
 {
-    uint32_t pulse_ns;
+    int ret;
 
     if (!device_is_ready(motor1)) {
         printk("PWM device not ready\n");
-        return;
+        return 0;
     }
 
-    pulse_ns = (PWM_PERIOD_NS * duty_percent) / 100u;
+    ret = pwm_set_cycles(motor1,
+                         PWM_CHANNEL,
+                         PWM_PERIOD,
+                         PWM_PULSE,
+                         PWM_POLARITY_NORMAL);
 
-    int ret = pwm_set(motor1, PWM_CHANNEL, PWM_PERIOD_NS,
-                      pulse_ns, PWM_POLARITY_NORMAL);
-    if (ret < 0) {
-        printk("pwm_set failed: %d\n", ret);
+    if (ret) {
+        printk("pwm_set_cycles failed %d\n", ret);
     }
-}
 
-int main(void)
-{
-	while (1) {
-		for (uint8_t duty = 0; duty <= 100; duty++) {
-			motor_set_duty(duty);
-			k_msleep(20); // Delay để đèn sáng dần
-		}
-		for (uint8_t duty = 100; duty > 0; duty--) {
-			motor_set_duty(duty);
-			k_msleep(20); // Delay để đèn tắt dần
-		}
-	}
-    return 0;
+    while (1) {
+        k_sleep(K_FOREVER);
+    }
 }
