@@ -11,6 +11,31 @@
 
 static const struct device *motor1 = DEVICE_DT_GET(DT_ALIAS(motor_1));
 
+void set_motor_speed(uint32_t speed)
+{
+    const uint32_t min_period = 1500U;
+    const uint32_t max_period = 5000U;
+    uint32_t period;
+    uint32_t pulse;
+    int ret;
+
+    if (speed > 100U) {
+        speed = 100U;
+    }
+
+    period = min_period + ((max_period - min_period) * speed) / 100U;
+    pulse = period / 2U;
+
+    ret = pwm_set_cycles(motor1,
+                         PWM_CHANNEL,
+                         period,
+                         pulse,
+                         PWM_POLARITY_NORMAL);
+    if (ret) {
+        printk("set_motor_speed: pwm_set_cycles failed %d\n", ret);
+    }
+}
+
 int main(void)
 {
     int ret;
@@ -20,17 +45,16 @@ int main(void)
         return 0;
     }
 
-    ret = pwm_set_cycles(motor1,
-                         PWM_CHANNEL,
-                         PWM_PERIOD,
-                         PWM_PULSE,
-                         PWM_POLARITY_NORMAL);
-
-    if (ret) {
-        printk("pwm_set_cycles failed %d\n", ret);
-    }
-
     while (1) {
-        k_sleep(K_FOREVER);
+        for (uint32_t speed = 0U; speed <= 100U; speed++) {
+            set_motor_speed(speed);
+            k_msleep(50);
+        }
+        k_msleep(1000);
+        for (int speed = 100; speed >= 0; speed--) {
+            set_motor_speed((uint32_t)speed);
+            k_msleep(50);
+        }
+        k_msleep(1000);
     }
 }
