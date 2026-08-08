@@ -2,6 +2,9 @@
 #include <zephyr/dt-bindings/pinctrl/stm32f1-pinctrl.h>
 
 &pinctrl {
+    tim1_ch1_pwm_out_pa11: tim1_ch1_pwm_out_pa11 {
+        pinmux = < 0x33020 >; /* in modules/hal/stm32/dts/st/f1/stm32f103r(8-b)tx-pinctrl.dtsi:756 */
+    };
 };
 
 
@@ -43,13 +46,30 @@
     st,prescaler = <71>;
 };
 
+&timers2 {
+    st,prescaler = <71>;
+    status = "okay";
+    pwm2: pwm
+    {
+        status = "okay";
+        pinctrl-0 = < &tim1_ch1_pwm_out_pa11 >;
+        pinctrl-names = "default"; 
+    };
+};
+
 / {
     chosen {
         zephyr,display = &oled_display;
     };
-
+    leds {
+        compatible = "gpio-leds";
+        led1: led1 {
+            gpios = <&gpiob 5 GPIO_ACTIVE_HIGH>;
+        };
+    };
     aliases {
         motor-1 = &pwm1;
+        motor-dir = &led1;
 	};
 };
 
