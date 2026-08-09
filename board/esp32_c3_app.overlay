@@ -13,7 +13,8 @@
 
 	ledc0_default: ledc0-default {
 		group1 {
-			pinmux = <LEDC_CH0_GPIO2>;
+			pinmux = <LEDC_CH0_GPIO2>,
+                     <LEDC_CH1_GPIO3>;
 			output-enable;
 		};
 	};
@@ -29,6 +30,10 @@
 	channel0@0 {
 		reg = <0x0>;
 		timer = <0>;
+	};
+    channel1@1 {
+		reg = <0x1>;
+		timer = <1>;
 	};
 };
 
@@ -74,8 +79,22 @@
 
     aliases {
 		pwm-0 = &ledc0;
-		pwm-led0 = &pwm_led_blue;
+		pwm-motor1 = &pwm_led_blue;
+        pwm-motor2 = &pwm_led_motor2;
+
+        motor-dir = &led1;
+        motor-dir2 = &led2;
 	};
+
+    leds {
+        compatible = "gpio-leds";
+        led1: led1 {
+            gpios = <&gpio0 1 GPIO_ACTIVE_HIGH>;
+        };
+        led2: led2 {
+            gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+        };
+    };
 
 	pwmleds {
 		compatible = "pwm-leds";
@@ -84,6 +103,11 @@
 			label = "PWM LED0";
 			pwms = <&ledc0 0 1000 PWM_POLARITY_NORMAL>;
 		};
+
+        pwm_led_motor2: pwm-led-gpio0-3 {
+            label = "PWM MOTOR2";
+            pwms = <&ledc0 1 1000 PWM_POLARITY_NORMAL>;
+        };
 	};
 };
 

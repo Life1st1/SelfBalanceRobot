@@ -1,6 +1,6 @@
 #ifndef CONTROLLER_H
 #define CONTROLLER_H
 
-controller_update()
+int controller_update(void);
 
 #endif // CONTROLLER_H
