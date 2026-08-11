@@ -16,8 +16,8 @@
 
 #define PWM_CHANNEL       1U
 #define MOTOR_MIN_PERIOD  00U
-#define MOTOR_MAX_PERIOD  1500U
-#define CONTROL_PERIOD_MS 10U
+#define MOTOR_MAX_PERIOD  300U
+#define CONTROL_PERIOD_MS 1U
 #define MAX_SPEED         100.0f
 
 static const struct pwm_dt_spec motor1 = PWM_DT_SPEC_GET(DT_ALIAS(pwm_motor1));
@@ -30,11 +30,18 @@ static const struct gpio_dt_spec motor_dir2 =
 
 void set_motor_speed(uint8_t id, uint32_t hz);
 
-static float pid_kp = 50.0f;
-static float pid_ki = 0.16f;
-static float pid_kd = 0.08f;
+static float pid_kp = 110.0f;
+static float pid_kd = 0.0f;
+static float pid_ki = 2.0f;
 static float pid_integral;
 static float pid_prev_error;
+
+void update_pid_gains(float kp, float ki, float kd) {
+    pid_kp = kp;
+    pid_ki = ki;
+    pid_kd = kd;
+    printk("Updated PID gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", pid_kp, pid_ki, pid_kd);
+}
 
 static float pid_compute(float setpoint, float measurement, float dt_ms)
 {
@@ -70,6 +77,7 @@ static void set_motor_direction(uint8_t id, bool forward)
 }
 
 void set_motor_speed(uint8_t id, uint32_t hz) {
+    int ret;
 	uint32_t period = 0;
 	if (hz == 0) {
 		if (id == 1) {
@@ -79,6 +87,7 @@ void set_motor_speed(uint8_t id, uint32_t hz) {
 		}
 		return;
 	}
+    hz = hz + 1;    // because hz = 1 the prescaler of timer is out of range
     if (hz > MOTOR_MAX_PERIOD) {
         hz = MOTOR_MAX_PERIOD;
     }
@@ -88,19 +97,88 @@ void set_motor_speed(uint8_t id, uint32_t hz) {
 	period = 1000000000U / hz;
 	if (id == 1) {
         //printk(" Motor1 speed: %d Hz, ", hz);
-		pwm_set_dt(&motor1, period, period / 2U);
+		ret = pwm_set_dt(&motor1, period, period / 2U);
+        if (ret != 0) {
+            printk("Failed to set PWM for motor1 hz=%d, period=%d, ret=%d\n", hz, period, ret);
+        }
 	} else if (id == 2) {
         //printk(" Motor2 speed: %d Hz\n", hz);
-		pwm_set_dt(&motor2, period, period / 2U);
+		ret = pwm_set_dt(&motor2, period, period / 2U);
+		if (ret != 0) {
+            printk("Failed to set PWM for motor2 hz=%d, period=%d, ret=%d\n", hz, period, ret);
+        }
 	}
+}
+
+void motor_disable(void) {
+    set_motor_speed(1, 0);
+    set_motor_speed(2, 0);
+}
+
+float calibrate_pitch_setpoint(void) {
+    imu_raw_t imu;
+    attitude_t attitude;
+    estimator_handle_t estimator;
+
+    const int num_samples = 100;
+    float samples[num_samples];
+    const float stddev_threshold = 0.5f; /* degrees */
+    float pitch_setpoint = 0.0f;
+
+    if (estimator_init_by_name(&estimator, ESTIMATOR_FILTER_NAME) != 0) {
+        printk("Estimator init failed during calibration\n");
+        return 0.0f;
+    }
+
+    /* Give sensor a moment to settle */
+    k_msleep(100);
+
+    bool stable = false;
+    while (!stable) {
+        float sum = 0.0f;
+        for (int i = 0; i < num_samples; i++) {
+            if (imu_read(&imu) == 0) {
+                estimator_update(&estimator, &imu, &attitude);
+                samples[i] = attitude.pitch;
+                sum += samples[i];
+            } else {
+                printk("IMU read failed during calibration\n");
+                samples[i] = 0.0f;
+            }
+            k_msleep(25);
+        }
+
+        float mean = sum / (float)num_samples;
+        float var = 0.0f;
+        for (int i = 0; i < num_samples; i++) {
+            float d = samples[i] - mean;
+            var += d * d;
+        }
+        float stddev = sqrtf(var / (float)num_samples);
+
+        printk("Calibration: mean=%.2f deg, stddev=%.2f deg\n", mean, stddev);
+
+        if (stddev < stddev_threshold) {
+            stable = true;
+            pitch_setpoint = mean;
+        } else {
+            printk("Repeat calibration, DONT MOVE!\n");
+            k_msleep(200);
+        }
+    }
+
+    estimator_deinit(&estimator);
+    printk("Calibrated pitch setpoint: %.2f\n", pitch_setpoint);
+    return -pitch_setpoint;
 }
 
 int controller_update(void) {
     imu_raw_t imu;
     attitude_t attitude;
     estimator_handle_t estimator;
+    float setpoint = 0.0f; // Desired pitch angle (upright position)
 
-    k_msleep(4000);
+    //k_msleep(4000);
     printk("Starting Self Balance Robot\n");
 
     if (!pwm_is_ready_dt(&motor1)) {
@@ -159,22 +237,34 @@ int controller_update(void) {
     estimator_update(&estimator, &imu, &attitude);
     printk("Initial pitch: %f\n", attitude.pitch);
 
+    float pitch_setpoint = calibrate_pitch_setpoint();
+    printk("Pitch setpoint: %f\n", pitch_setpoint);
+
     while (1) {
         if (imu_read(&imu) == 0) {
             estimator_update(&estimator, &imu, &attitude);
 
-            float pid_output = pid_compute(0.0f, attitude.pitch, CONTROL_PERIOD_MS);
+            if (attitude.pitch > 45.0f || attitude.pitch < -45.0f) {
+                printk("Pitch angle out of range: %.2f\n", attitude.pitch);
+                motor_disable();
+                k_msleep(1000);
+                continue;
+            }
+
+            float pid_output = pid_compute(pitch_setpoint, attitude.pitch, CONTROL_PERIOD_MS);
             bool direction = (pid_output >= 0.0f);
             //printk("Pitch: %.2f, Direction: %s, output: %.2f, ", attitude.pitch, direction ? "forward" : "backward", pid_output);
             set_motor_direction(1, direction);
             set_motor_direction(2, direction);
             set_motor_speed(1, (uint32_t)(pid_output < 0.0f ? -pid_output : pid_output));
             set_motor_speed(2, (uint32_t)(pid_output < 0.0f ? -pid_output : pid_output));
+
         } else {
             printk("IMU read failed\n");
         }
 
-        k_msleep(CONTROL_PERIOD_MS);
+        //k_msleep(CONTROL_PERIOD_MS);
+        k_usleep(500);
     }
 
     estimator_deinit(&estimator);
