@@ -14,7 +14,7 @@ typedef struct
     float gy;
     float gz;
 
-    float dt; // Delta time in seconds
+    float dt; // Delta time in milliseconds
 } imu_raw_t;
 
 int imu_init(void);

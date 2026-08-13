@@ -7,6 +7,7 @@
 
 #include "../drivers/imu/mpu6650.h"
 #include "../sensor_fusion/state_estimator.h"
+#include "../common/defines.h"
 
 #include "controller.h"
 
@@ -20,6 +21,12 @@
 #define CONTROL_PERIOD_MS 1U
 #define MAX_SPEED         100.0f
 
+#define PID_KP 110.0f
+#define PID_KI 2.0f
+#define PID_KD 0.0f
+
+struct k_mutex pid_mutex;
+
 static const struct pwm_dt_spec motor1 = PWM_DT_SPEC_GET(DT_ALIAS(pwm_motor1));
 static const struct pwm_dt_spec motor2 = PWM_DT_SPEC_GET(DT_ALIAS(pwm_motor2));
 
@@ -30,40 +37,37 @@ static const struct gpio_dt_spec motor_dir2 =
 
 void set_motor_speed(uint8_t id, uint32_t hz);
 
-static float pid_kp = 110.0f;
-static float pid_kd = 0.0f;
-static float pid_ki = 2.0f;
+#define PID_KP 110.0f
+#define PID_KI 2.0f
+#define PID_KD 0.0f
 static float pid_integral;
 static float pid_prev_error;
 
+RobotData_t robot_data = {
+    .pid_gains = {0.0f, PID_KP, PID_KI, PID_KD, 0.0f},
+};
+
 void update_pid_gains(float kp, float ki, float kd) {
-    pid_kp = kp;
-    pid_ki = ki;
-    pid_kd = kd;
-    printk("Updated PID gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", pid_kp, pid_ki, pid_kd);
+    k_mutex_lock(&pid_mutex, K_FOREVER);
+    robot_data.pid_gains.kp = kp;
+    robot_data.pid_gains.ki = ki;
+    robot_data.pid_gains.kd = kd;
+    k_mutex_unlock(&pid_mutex);
+
+    printk("Updated PID gains: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", robot_data.pid_gains.kp, robot_data.pid_gains.ki, robot_data.pid_gains.kd);
 }
 
-static float pid_compute(float setpoint, float measurement, float dt_ms)
+static float pid_compute(RobotData_t *robot_data)
 {
-    float error = setpoint - measurement;
-    float dt = dt_ms / 1000.0f;
+    float error = robot_data->pitch_setpoint - robot_data->attitude.pitch;
+    float dt = robot_data->imu_data.dt;
 
     pid_integral += error * dt;
     float derivative = (error - pid_prev_error) / dt;
     pid_prev_error = error;
-
-    float output = pid_kp * error + pid_ki * pid_integral + pid_kd * derivative;
-    // //printk("PID compute: setpoint=%.2f, measurement=%.2f, error=%.2f, integral=%.2f, derivative=%.2f, output=%.2f, dt=%.2f\n",
-    //        //setpoint, measurement, error, pid_integral, derivative, output, dt);
-    // if (output > MAX_SPEED) {
-    //     //printk("PID output exceeds MAX_SPEED, limiting to %d\n", MAX_SPEED);
-    //     output = MAX_SPEED;
-    // } else if (output < -MAX_SPEED) {
-    //     //printk("PID output below -MAX_SPEED, limiting to %d\n", -MAX_SPEED);
-    //     output = -MAX_SPEED;
-    // }
-    // //printk("PID compute: setpoint=%.2f, measurement=%.2f, error=%.2f, integral=%.2f, derivative=%.2f, output=%.2f, dt=%.2f\n",
-    //        //setpoint, measurement, error, pid_integral, derivative, output, dt);
+    k_mutex_lock(&pid_mutex, K_FOREVER);
+    float output = robot_data->pid_gains.kp * error + robot_data->pid_gains.ki * pid_integral + robot_data->pid_gains.kd * derivative;
+    k_mutex_unlock(&pid_mutex);
     return output;
 }
 
@@ -172,99 +176,119 @@ float calibrate_pitch_setpoint(void) {
     return -pitch_setpoint;
 }
 
-int controller_update(void) {
-    imu_raw_t imu;
-    attitude_t attitude;
-    estimator_handle_t estimator;
-    float setpoint = 0.0f; // Desired pitch angle (upright position)
+int controller_init(void) {
+    robot_data.pitch_setpoint = 0.0f; // Desired pitch angle (upright position)
 
     //k_msleep(4000);
     printk("Starting Self Balance Robot\n");
 
     if (!pwm_is_ready_dt(&motor1)) {
         printk("PWM device not ready\n");
-        return 0;
+        return -1;
     }
     if (!pwm_is_ready_dt(&motor2)) {
         printk("PWM device not ready\n");
-        return 0;
+        return -1;
     }
-    printk("PWM device is ready\n");
-
-    printk("Motor dir.port: %p, pin: %d\n", motor_dir.port, motor_dir.pin);
-    printk("Motor dir2.port: %p, pin: %d\n", motor_dir2.port, motor_dir2.pin);
     if (motor_dir.port != NULL && !gpio_is_ready_dt(&motor_dir)) {
         printk("Motor direction GPIO not ready\n");
-        return 0;
+        return -1;
     }
     if (motor_dir2.port != NULL && !gpio_is_ready_dt(&motor_dir2)) {
         printk("Motor direction 2 GPIO not ready\n");
-        return 0;
+        return -1;
     }
-    printk("Motor direction GPIO is ready\n");
-    printk("Motor direction GPIO port: %p, pin: %d\n", motor_dir.port, motor_dir.pin);
     if (motor_dir.port != NULL) {
         if (gpio_pin_configure_dt(&motor_dir, GPIO_OUTPUT_INACTIVE) != 0) {
             printk("Motor direction GPIO configure failed\n");
-            return 0;
+            return -1;
         }
-        k_msleep(100);
-        printk("Motor direction GPIO configured1\n");
     }
     if (motor_dir2.port != NULL) {
         if (gpio_pin_configure_dt(&motor_dir2, GPIO_OUTPUT_INACTIVE) != 0) {
             printk("Motor direction 2 GPIO configure failed\n");
-            return 0;
+            return -1;
         }
-        k_msleep(100);
-        printk("Motor direction 2 GPIO configured1\n");
     }
-    printk("Motor direction GPIO configured2\n");
 
     if (imu_init() != 0) {
         printk("IMU init failed\n");
-        return 0;
+        return -1;
     }
-    printk("IMU initialized\n");
+}
 
+void print_robot_data(void) {
+    RobotData_t robot_data_local;
+    while(1) {
+        k_msleep(100);
+        k_msgq_get(&log_msgq, &robot_data_local, K_FOREVER);
+        printk("Robot Data:\n");
+        printk("Pitch Setpoint: %.2f\n", robot_data_local.pitch_setpoint);
+        printk("IMU Data: ax=%.2f, ay=%.2f, az=%.2f, gx=%.2f, gy=%.2f, gz=%.2f, dt=%.6f\n",
+               robot_data_local.imu_data.ax, robot_data_local.imu_data.ay, robot_data_local.imu_data.az,
+               robot_data_local.imu_data.gx, robot_data_local.imu_data.gy, robot_data_local.imu_data.gz,
+               robot_data_local.imu_data.dt);
+        printk("PID Gains: Kp=%.2f, Ki=%.2f, Kd=%.2f, Output=%.2f\n",
+               robot_data_local.pid_gains.kp, robot_data_local.pid_gains.ki,
+               robot_data_local.pid_gains.kd, robot_data_local.pid_gains.output);
+        for (int i = 0; i < MOTOR_COUNT; i++) {
+            printk("Motor %d: ID=%d, Speed=%.2f, Direction=%s\n", i + 1,
+                   robot_data_local.motors[i].id, robot_data_local.motors[i].speed,
+                   robot_data_local.motors[i].direction ? "Forward" : "Backward");
+        }
+        printk("Attitude: Roll=%.2f, Pitch=%.2f, Yaw=%.2f\n",
+               robot_data_local.attitude.roll, robot_data_local.attitude.pitch,
+               robot_data_local.attitude.yaw);
+    }
+}
+
+int controller_update(void) {
+    attitude_t attitude;
+    estimator_handle_t estimator;
+
+    if (controller_init() != 0) {
+        printk("Controller init failed\n");
+        return -1;
+    }
     if (estimator_init_by_name(&estimator, "madgwick") != 0) {
         printk("Madgwick estimator init failed\n");
-        return 0;
+        return -1;
     }
     printk("Madgwick estimator initialized\n");
-    //test get pitch value
-    imu_read(&imu);
-    estimator_update(&estimator, &imu, &attitude);
-    printk("Initial pitch: %f\n", attitude.pitch);
 
-    float pitch_setpoint = calibrate_pitch_setpoint();
-    printk("Pitch setpoint: %f\n", pitch_setpoint);
+    robot_data.pitch_setpoint = calibrate_pitch_setpoint();
+    printk("Pitch setpoint: %f\n", robot_data.pitch_setpoint);
 
     while (1) {
-        if (imu_read(&imu) == 0) {
-            estimator_update(&estimator, &imu, &attitude);
+        if (imu_read(&robot_data.imu_data) == 0) {
+            estimator_update(&estimator, &robot_data.imu_data, &robot_data.attitude);
 
-            if (attitude.pitch > 45.0f || attitude.pitch < -45.0f) {
-                printk("Pitch angle out of range: %.2f\n", attitude.pitch);
-                motor_disable();
-                k_msleep(1000);
-                continue;
-            }
+            // if (robot_data.attitude.pitch > 45.0f || robot_data.attitude.pitch < -45.0f) {
+            //     printk("Pitch angle out of range: %.2f\n", robot_data.attitude.pitch);
+            //     motor_disable();
+            //     k_msleep(1000);
+            //     continue;
+            // }
 
-            float pid_output = pid_compute(pitch_setpoint, attitude.pitch, CONTROL_PERIOD_MS);
-            bool direction = (pid_output >= 0.0f);
+            robot_data.pid_gains.output = pid_compute(&robot_data);
+            robot_data.motors[0].speed = (uint32_t)(robot_data.pid_gains.output < 0.0f ? -robot_data.pid_gains.output : robot_data.pid_gains.output);
+            robot_data.motors[1].speed = (uint32_t)(robot_data.pid_gains.output < 0.0f ? -robot_data.pid_gains.output : robot_data.pid_gains.output);
+            robot_data.motors[0].direction = (robot_data.pid_gains.output >= 0.0f);
+            robot_data.motors[1].direction = (robot_data.pid_gains.output >= 0.0f);
             //printk("Pitch: %.2f, Direction: %s, output: %.2f, ", attitude.pitch, direction ? "forward" : "backward", pid_output);
-            set_motor_direction(1, direction);
-            set_motor_direction(2, direction);
-            set_motor_speed(1, (uint32_t)(pid_output < 0.0f ? -pid_output : pid_output));
-            set_motor_speed(2, (uint32_t)(pid_output < 0.0f ? -pid_output : pid_output));
+            set_motor_direction(1, robot_data.motors[0].direction);
+            set_motor_direction(2, robot_data.motors[1].direction);
+            set_motor_speed(1, robot_data.motors[0].speed);
+            set_motor_speed(2, robot_data.motors[1].speed);
+            //print_robot_data();
+            // if(k_msgq_put(&log_msgq, &robot_data, K_NO_WAIT) != 0) {
+            //     k_msgq_purge(&log_msgq); // Clear the queue if it's full
+            // }
 
         } else {
             printk("IMU read failed\n");
         }
-
-        //k_msleep(CONTROL_PERIOD_MS);
-        k_usleep(500);
+        k_msleep(CONTROL_PERIOD_MS);
     }
 
     estimator_deinit(&estimator);
