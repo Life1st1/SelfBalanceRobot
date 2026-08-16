@@ -5,7 +5,7 @@
 #include "../../drivers/imu/mpu6650.h"
 
 #ifndef COMPLEMENTARY_FILTER_ALPHA
-#define COMPLEMENTARY_FILTER_ALPHA 0.90f
+#define COMPLEMENTARY_FILTER_ALPHA 0.9f
 #endif
 
 typedef struct

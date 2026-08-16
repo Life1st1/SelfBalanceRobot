@@ -21,8 +21,8 @@
 #define CONTROL_PERIOD_MS 1U
 #define MAX_SPEED         100.0f
 
-#define PID_KP 110.0f
-#define PID_KI 2.0f
+#define PID_KP 50.0f
+#define PID_KI 1.0f
 #define PID_KD 0.0f
 
 struct k_mutex pid_mutex;
@@ -37,9 +37,6 @@ static const struct gpio_dt_spec motor_dir2 =
 
 void set_motor_speed(uint8_t id, uint32_t hz);
 
-#define PID_KP 110.0f
-#define PID_KI 2.0f
-#define PID_KD 0.0f
 static float pid_integral;
 static float pid_prev_error;
 
@@ -119,15 +116,22 @@ void motor_disable(void) {
     set_motor_speed(2, 0);
 }
 
-float calibrate_pitch_setpoint(void) {
+static float calibrate_mpu(imu_raw_t *imu_calibrated, attitude_t *attitude_calibrated) {
     imu_raw_t imu;
     attitude_t attitude;
     estimator_handle_t estimator;
 
-    const int num_samples = 100;
-    float samples[num_samples];
+    const int num_samples = 200;
+    float pitch_samples[num_samples];
     const float stddev_threshold = 0.5f; /* degrees */
     float pitch_setpoint = 0.0f;
+
+    float gx_sum = 0.0f;
+    float gy_sum = 0.0f;
+    float gz_sum = 0.0f;
+    float roll_sum = 0.0f;
+    float pitch_sum = 0.0f;
+    float yaw_sum = 0.0f;
 
     if (estimator_init_by_name(&estimator, ESTIMATOR_FILTER_NAME) != 0) {
         printk("Estimator init failed during calibration\n");
@@ -143,11 +147,17 @@ float calibrate_pitch_setpoint(void) {
         for (int i = 0; i < num_samples; i++) {
             if (imu_read(&imu) == 0) {
                 estimator_update(&estimator, &imu, &attitude);
-                samples[i] = attitude.pitch;
-                sum += samples[i];
+                pitch_samples[i] = attitude.pitch;
+                sum += pitch_samples[i];
+                gx_sum += imu.gx;
+                gy_sum += imu.gy;
+                gz_sum += imu.gz;
+                roll_sum += attitude.roll;
+                pitch_sum += attitude.pitch;
+                yaw_sum += attitude.yaw;
             } else {
                 printk("IMU read failed during calibration\n");
-                samples[i] = 0.0f;
+                pitch_samples[i] = 0.0f;
             }
             k_msleep(25);
         }
@@ -155,7 +165,7 @@ float calibrate_pitch_setpoint(void) {
         float mean = sum / (float)num_samples;
         float var = 0.0f;
         for (int i = 0; i < num_samples; i++) {
-            float d = samples[i] - mean;
+            float d = pitch_samples[i] - mean;
             var += d * d;
         }
         float stddev = sqrtf(var / (float)num_samples);
@@ -171,8 +181,27 @@ float calibrate_pitch_setpoint(void) {
         }
     }
 
+    if (imu_calibrated != NULL) {
+        imu_calibrated->gx = gx_sum / (float)num_samples;
+        imu_calibrated->gy = gy_sum / (float)num_samples;
+        imu_calibrated->gz = gz_sum / (float)num_samples;
+    }
+
+    if (attitude_calibrated != NULL) {
+        attitude_calibrated->roll = roll_sum / (float)num_samples;
+        attitude_calibrated->pitch = pitch_sum / (float)num_samples;
+        attitude_calibrated->yaw = yaw_sum / (float)num_samples;
+    }
+
     estimator_deinit(&estimator);
-    printk("Calibrated pitch setpoint: %.2f\n", pitch_setpoint);
+    printk("Calibrated MPU: roll=%.2f, pitch=%.2f, yaw=%.2f, gx=%.3f, gy=%.3f, gz=%.3f\n",
+           attitude_calibrated ? attitude_calibrated->roll : 0.0f,
+           attitude_calibrated ? attitude_calibrated->pitch : 0.0f,
+           attitude_calibrated ? attitude_calibrated->yaw : 0.0f,
+           imu_calibrated ? imu_calibrated->gx : 0.0f,
+           imu_calibrated ? imu_calibrated->gy : 0.0f,
+           imu_calibrated ? imu_calibrated->gz : 0.0f);
+
     return -pitch_setpoint;
 }
 
@@ -219,31 +248,37 @@ int controller_init(void) {
 
 void print_robot_data(void) {
     RobotData_t robot_data_local;
-    while(1) {
-        k_msleep(100);
+
+    while (1) {
+        k_msleep(10);
         k_msgq_get(&log_msgq, &robot_data_local, K_FOREVER);
-        printk("Robot Data:\n");
-        printk("Pitch Setpoint: %.2f\n", robot_data_local.pitch_setpoint);
-        printk("IMU Data: ax=%.2f, ay=%.2f, az=%.2f, gx=%.2f, gy=%.2f, gz=%.2f, dt=%.6f\n",
-               robot_data_local.imu_data.ax, robot_data_local.imu_data.ay, robot_data_local.imu_data.az,
-               robot_data_local.imu_data.gx, robot_data_local.imu_data.gy, robot_data_local.imu_data.gz,
-               robot_data_local.imu_data.dt);
-        printk("PID Gains: Kp=%.2f, Ki=%.2f, Kd=%.2f, Output=%.2f\n",
-               robot_data_local.pid_gains.kp, robot_data_local.pid_gains.ki,
-               robot_data_local.pid_gains.kd, robot_data_local.pid_gains.output);
-        for (int i = 0; i < MOTOR_COUNT; i++) {
-            printk("Motor %d: ID=%d, Speed=%.2f, Direction=%s\n", i + 1,
-                   robot_data_local.motors[i].id, robot_data_local.motors[i].speed,
-                   robot_data_local.motors[i].direction ? "Forward" : "Backward");
-        }
-        printk("Attitude: Roll=%.2f, Pitch=%.2f, Yaw=%.2f\n",
-               robot_data_local.attitude.roll, robot_data_local.attitude.pitch,
+
+        printk("{\"time_ms\":%lld,\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+               "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
+               "\"roll\":%.3f,\"pitch\":%.3f,\"yaw\":%.3f}\n",
+               (long long)k_uptime_get(),
+               robot_data_local.imu_data.ax,
+               robot_data_local.imu_data.ay,
+               robot_data_local.imu_data.az,
+               robot_data_local.imu_data.gx,
+               robot_data_local.imu_data.gy,
+               robot_data_local.imu_data.gz,
+               robot_data_local.attitude.roll,
+               robot_data_local.attitude.pitch,
                robot_data_local.attitude.yaw);
     }
 }
 
+#define DELTA_T 0.01f //control loop running at 500 Hz
+
+imu_raw_t imu_calib = {
+    .gx = 0.0f,
+    .gy = 0.0f,
+    .gz = 0.0f
+};
+
 int controller_update(void) {
-    attitude_t attitude;
+    attitude_t attitude_calib;
     estimator_handle_t estimator;
 
     if (controller_init() != 0) {
@@ -256,11 +291,23 @@ int controller_update(void) {
     }
     printk("Madgwick estimator initialized\n");
 
-    robot_data.pitch_setpoint = calibrate_pitch_setpoint();
+    robot_data.pitch_setpoint = calibrate_mpu(&imu_calib, &attitude_calib);
     printk("Pitch setpoint: %f\n", robot_data.pitch_setpoint);
+    imu_calib.gx = imu_calib.gx / 2.0f;
+    imu_calib.gy = imu_calib.gy / 2.0f;
+    imu_calib.gz = imu_calib.gz / 2.0f;
+
+    printk("Calibrated IMU: gx=%.3f, gy=%.3f, gz=%.3f\n",
+           imu_calib.gx, imu_calib.gy, imu_calib.gz);
+    
 
     while (1) {
+        if (k_sem_take(&alarm_sem, K_FOREVER) != 0) {
+            printk("Failed to take alarm semaphore\n");
+            continue;
+        }
         if (imu_read(&robot_data.imu_data) == 0) {
+            robot_data.imu_data.dt = DELTA_T; // Assuming a fixed delta time for simplicity
             estimator_update(&estimator, &robot_data.imu_data, &robot_data.attitude);
 
             // if (robot_data.attitude.pitch > 45.0f || robot_data.attitude.pitch < -45.0f) {
@@ -281,14 +328,14 @@ int controller_update(void) {
             set_motor_speed(1, robot_data.motors[0].speed);
             set_motor_speed(2, robot_data.motors[1].speed);
             //print_robot_data();
-            // if(k_msgq_put(&log_msgq, &robot_data, K_NO_WAIT) != 0) {
-            //     k_msgq_purge(&log_msgq); // Clear the queue if it's full
-            // }
+            if(k_msgq_put(&log_msgq, &robot_data, K_NO_WAIT) != 0) {
+                k_msgq_purge(&log_msgq); // Clear the queue if it's full
+            }
 
         } else {
             printk("IMU read failed\n");
         }
-        k_msleep(CONTROL_PERIOD_MS);
+        //k_msleep(CONTROL_PERIOD_MS);
     }
 
     estimator_deinit(&estimator);

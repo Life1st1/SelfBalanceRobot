@@ -3,6 +3,7 @@
 
 extern struct k_msgq log_msgq;
 extern struct k_mutex pid_mutex;
+extern struct k_sem alarm_sem;
 
 int controller_update(void);
 void update_pid_gains(float kp, float ki, float kd);

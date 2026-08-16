@@ -27,7 +27,7 @@
 /* scheduling priority used by each thread */
 #define PRIORITY_WIFI 7
 #define PRIORITY_CONTROLLER -20
-#define PRIORITY_LOG 8
+#define PRIORITY_LOG 6
 #define SAMPLE_TIMER DT_INST(0, espressif_esp32_counter)
 
 K_MSGQ_DEFINE(log_msgq, sizeof(RobotData_t), 1, 1);
@@ -65,51 +65,25 @@ void thread_print_robot_data(void *dummy1, void *dummy2, void *dummy3)
     print_robot_data();
 }
 
-#define DELAY 2000000
+#define DELAY 10000
 #define ALARM_CHANNEL_ID 0
 #define ALARM_FLAGS 0
 
+K_SEM_DEFINE(alarm_sem, 0, 1);
 struct counter_alarm_cfg alarm_cfg;
 
 static void test_counter_interrupt_fn(const struct device *counter_dev,
 				      uint8_t chan_id, uint32_t ticks,
 				      void *user_data)
 {
-	struct counter_alarm_cfg *config = user_data;
-	uint32_t now_ticks;
-	uint64_t now_usec;
-	int now_sec;
-	int err;
-
-	err = counter_get_value(counter_dev, &now_ticks);
-	if (!counter_is_counting_up(counter_dev)) {
-		now_ticks = counter_get_top_value(counter_dev) - now_ticks;
-	}
-
-	if (err) {
-		printk("Failed to read counter value (err %d)", err);
-		return;
-	}
-
-	now_usec = counter_ticks_to_us(counter_dev, now_ticks);
-	now_sec = (int)(now_usec / USEC_PER_SEC);
-
-	printk("!!! Alarm !!!\n");
-	printk("Now: %u\n", now_sec);
-
-	/* Set a new alarm with a double length duration */
-	config->ticks = config->ticks * 2U;
-
-	printk("Set alarm in %u sec (%u ticks)\n",
-	       (uint32_t)(counter_ticks_to_us(counter_dev,
-					   config->ticks) / USEC_PER_SEC),
-	       config->ticks);
-
-	err = counter_set_channel_alarm(counter_dev, ALARM_CHANNEL_ID,
-					user_data);
-	if (err != 0) {
-		printk("Alarm could not be set\n");
-	}
+    static uint32_t now_ticks = 0;
+    now_ticks++;
+    k_sem_give(&alarm_sem);
+    //printk("Alarm triggered: %u ticks\n", now_ticks);
+    //reset the alarm for the next interval
+    //alarm_cfg.ticks = counter_us_to_ticks(counter_dev, DELAY);
+    int err = counter_set_channel_alarm(counter_dev, ALARM_CHANNEL_ID,
+                    &alarm_cfg);
 }
 
 int timer_init(void)

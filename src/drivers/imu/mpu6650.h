@@ -17,6 +17,8 @@ typedef struct
     float dt; // Delta time in milliseconds
 } imu_raw_t;
 
+extern imu_raw_t imu_calib;
+
 int imu_init(void);
 
 int imu_read(imu_raw_t *imu);
